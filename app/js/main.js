@@ -2,10 +2,11 @@
 // All network access goes through the service adapters; this module never builds a URL itself.
 import { PRESETS, DEFAULT_PRESET_ID } from './presets.js';
 import { SURVEYS, DEFAULT_SURVEY, CREDIT as HIPS2FITS_CREDIT, fetchCutout } from './services/hips2fits.js';
-import { coneSearch, coneCount } from './services/simbad.js';
+import { coneSearch, fieldCensus } from './services/simbad.js';
 
 const IMAGE_SIZE_PX = 800;
 const TABLE_LIMIT = 200;
+const CENSUS_INLINE = 8; // census groups shown before the "+ k more types" tail
 const SIMBAD_OBJECT_PAGE = 'https://simbad.cds.unistra.fr/simbad/sim-id?Ident=';
 
 const $ = (selector) => document.querySelector(selector);
@@ -25,8 +26,12 @@ const ui = {
   imageError: $('#image-error'),
   tablePanel: $('#table-panel'),
   rowCount: $('#row-count'),
+  sort: $('#sort'),
+  census: $('#field-census'),
   tableError: $('#table-error'),
   tableStatus: $('#table-status'),
+  refsHeader: $('#col-refs'),
+  sepHeader: $('#col-sep'),
   tbody: $('#objects-table tbody'),
 };
 
@@ -38,8 +43,17 @@ const FIELDS = [
 ];
 const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 
+// Row orders offered by #sort; both work on the loaded rows and never send a request.
+// `refs` is the server's own order (nbref DESC, sep_deg ASC), so it is rendered as received.
+const SORTS = {
+  refs: { header: 'refsHeader', direction: 'descending', order: (objects) => objects },
+  sep: { header: 'sepHeader', direction: 'ascending', order: (objects) => [...objects].sort(bySeparation) },
+};
+const DEFAULT_SORT = 'refs';
+
 let busy = false;
 let imageObjectUrl = null;
+let loadedObjects = []; // rows of the last successful catalogue query, in server order
 
 // ---- setup (synchronous, so the presets exist as soon as the module has run) ----
 
@@ -47,6 +61,8 @@ for (const preset of PRESETS) ui.preset.append(new Option(preset.label, preset.i
 for (const survey of SURVEYS) ui.survey.append(new Option(survey.label, survey.id));
 ui.preset.value = DEFAULT_PRESET_ID;
 ui.survey.value = DEFAULT_SURVEY;
+ui.sort.value = DEFAULT_SORT;
+markSortedColumn(currentSort());
 applyPreset();
 
 // Re-selecting the current preset fires no `change`, hence the fill on load above as well.
@@ -59,6 +75,7 @@ ui.form.addEventListener('submit', (event) => {
 for (const key of ['ra', 'dec', 'fov']) {
   ui[key].addEventListener('input', () => ui[key].removeAttribute('aria-invalid'));
 }
+ui.sort.addEventListener('change', renderObjects);
 
 function applyPreset() {
   const preset = PRESETS.find((p) => p.id === ui.preset.value);
@@ -204,14 +221,16 @@ function line(className, text) {
 
 async function showObjects({ ra, dec, radius }) {
   ui.tablePanel.setAttribute('aria-busy', 'true');
-  ui.tbody.replaceChildren();
+  loadedObjects = [];
+  renderObjects();
+  clearCensus();
   ui.rowCount.textContent = '';
   ui.tableError.textContent = '';
-  setTableStatus('Loading SIMBAD objects…');
+  setTableStatus('Loading SIMBAD objects and field census…');
 
   const cone = { ra, dec, radiusDeg: radius };
-  // allSettled, not all: a failed count must not throw away good rows.
-  const [rows, total] = await Promise.allSettled([coneSearch({ ...cone, limit: TABLE_LIMIT }), coneCount(cone)]);
+  // allSettled, not all: a failed census must not throw away 200 good rows.
+  const [rows, census] = await Promise.allSettled([coneSearch({ ...cone, limit: TABLE_LIMIT }), fieldCensus(cone)]);
   ui.tablePanel.removeAttribute('aria-busy');
 
   if (rows.status === 'rejected') {
@@ -221,23 +240,46 @@ async function showObjects({ ra, dec, radius }) {
     return;
   }
 
-  const objects = rows.value;
-  const fragment = document.createDocumentFragment();
-  for (const object of objects) fragment.append(objectRow(object));
-  ui.tbody.append(fragment);
+  loadedObjects = rows.value;
+  renderObjects();
+  if (census.status === 'fulfilled') {
+    renderCensus(census.value);
+  } else {
+    ui.tableError.textContent = `Catalogue error: the field census query failed: ${census.reason.message}`;
+  }
 
   const within = `within ${trimNumber(radius)}°`;
-  if (total.status === 'rejected') {
-    ui.tableError.textContent = `Catalogue error: the object count query failed: ${total.reason.message}`;
-  }
-  if (objects.length === 0) {
+  if (loadedObjects.length === 0) {
     setTableStatus('No catalogued objects in this field');
   } else {
     setTableStatus('');
-    ui.rowCount.textContent = total.status === 'fulfilled'
-      ? `Showing ${objects.length} of ${total.value.toLocaleString('en-US')} objects ${within}`
-      : `Showing ${objects.length} objects ${within} (total unavailable)`;
+    ui.rowCount.textContent = census.status === 'fulfilled'
+      ? `Showing ${loadedObjects.length} of ${census.value.total.toLocaleString('en-US')} objects ${within}`
+      : `Showing ${loadedObjects.length} objects ${within} (total unavailable)`;
   }
+}
+
+function currentSort() {
+  return SORTS[ui.sort.value] ?? SORTS[DEFAULT_SORT];
+}
+
+// Render the loaded rows in the order #sort asks for (also the #sort change handler).
+function renderObjects() {
+  const sort = currentSort();
+  markSortedColumn(sort);
+  const fragment = document.createDocumentFragment();
+  for (const object of sort.order(loadedObjects)) fragment.append(objectRow(object));
+  ui.tbody.replaceChildren(fragment);
+}
+
+function markSortedColumn(sort) {
+  for (const { header } of Object.values(SORTS)) ui[header].removeAttribute('aria-sort');
+  ui[sort.header].setAttribute('aria-sort', sort.direction);
+}
+
+// Numeric, never on the formatted text. Array#sort is stable, so equal separations keep Refs order.
+function bySeparation(a, b) {
+  return (a.sepDeg ?? Infinity) - (b.sepDeg ?? Infinity);
 }
 
 function objectRow(object) {
@@ -258,6 +300,7 @@ function objectRow(object) {
   tr.append(
     idCell,
     typeCell,
+    cell(object.nbref == null ? '—' : object.nbref.toLocaleString('en-US'), 'num'),
     cell(object.ra == null ? '—' : deg(object.ra, 5), 'num'),
     cell(object.dec == null ? '—' : signedDeg(object.dec, 5), 'num'),
     cell(object.sepDeg == null ? '—' : (object.sepDeg * 60).toFixed(2), 'num'),
@@ -270,6 +313,39 @@ function cell(text, className) {
   td.className = className;
   td.textContent = text;
   return td;
+}
+
+// Every group gets a [data-count] child (the gate and the total depend on all of them); only the
+// top CENSUS_INLINE are visible, the rest are summarised by the "+ k more types" tail.
+function renderCensus({ groups, total }) {
+  const items = groups.map((group, i) => {
+    const li = document.createElement('li');
+    li.dataset.count = String(group.n);
+    li.hidden = i >= CENSUS_INLINE;
+    const type = document.createElement('span');
+    type.className = 'census-type';
+    type.textContent = group.otypeDesc ?? 'Unclassified';
+    const count = document.createElement('span');
+    count.className = 'census-count';
+    count.textContent = group.n.toLocaleString('en-US');
+    li.append(type, ' ', count);
+    return li;
+  });
+  if (groups.length > CENSUS_INLINE) {
+    const more = document.createElement('li');
+    more.className = 'census-more';
+    more.textContent = `+ ${groups.length - CENSUS_INLINE} more types`;
+    items.push(more);
+  }
+  ui.census.dataset.total = String(total);
+  ui.census.dataset.groups = String(groups.length);
+  ui.census.replaceChildren(...items);
+}
+
+function clearCensus() {
+  ui.census.replaceChildren();
+  delete ui.census.dataset.total;
+  delete ui.census.dataset.groups;
 }
 
 function setTableStatus(text) {

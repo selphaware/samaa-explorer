@@ -97,7 +97,8 @@ a {
   gap: 4px;
 }
 
-.field label {
+.field label,
+.sort-control label {
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
@@ -219,10 +220,20 @@ input[aria-invalid="true"] {
   min-width: 0;
 }
 
+/* When the panel height is fixed (two-column layout) only the table scroller gives way;
+   the head, census and alerts keep their wrapped height instead of overlapping. */
+.panel > * {
+  flex-shrink: 0;
+}
+
+.panel > .table-scroll {
+  flex-shrink: 1;
+}
+
 .panel-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 4px 12px;
   min-height: 20px;
@@ -235,6 +246,13 @@ input[aria-invalid="true"] {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.panel-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
 }
 
 /* ---- image ---- */
@@ -292,7 +310,7 @@ input[aria-invalid="true"] {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- objects table ---- */
+/* ---- objects panel head: row count + sort ---- */
 
 .row-count {
   margin: 0;
@@ -300,6 +318,55 @@ input[aria-invalid="true"] {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+.sort-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sort-control select {
+  height: 30px;
+  font-size: 13px;
+}
+
+/* ---- field census: one wrapped line, "Star 4,728 · Red Supergiant Candidate 3,871 · …" ---- */
+
+.census {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.census:empty {
+  display: none;
+}
+
+.census li {
+  white-space: nowrap;
+}
+
+/* Trailing separator, so a wrapped line never starts with a dot. */
+.census li:not(:last-child)::after {
+  content: "·";
+  margin: 0 7px;
+  color: var(--muted);
+}
+
+.census-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.census-more {
+  color: var(--muted);
+}
+
+/* ---- objects table ---- */
 
 .table-status {
   margin: 0;
@@ -340,6 +407,24 @@ input[aria-invalid="true"] {
   white-space: nowrap;
 }
 
+/* The active sort column: a direction mark next to the label (aria-sort carries it for AT). */
+#objects-table thead th[aria-sort] {
+  color: var(--text);
+}
+
+#objects-table thead th[aria-sort]::after {
+  margin-left: 3px;
+  color: var(--accent);
+}
+
+#objects-table thead th[aria-sort="descending"]::after {
+  content: "↓";
+}
+
+#objects-table thead th[aria-sort="ascending"]::after {
+  content: "↑";
+}
+
 #objects-table td {
   padding: 5px 8px;
   border-bottom: 1px solid var(--frame);
@@ -374,6 +459,10 @@ input[aria-invalid="true"] {
 
 .col-id a:hover {
   text-decoration: underline;
+}
+
+.col-type {
+  min-width: 7rem;
 }
 
 /* ---- footer ---- */
@@ -433,5 +522,9 @@ input[aria-invalid="true"] {
 
   #explore {
     flex: 1 1 100%;
+  }
+
+  .census li {
+    white-space: normal;
   }
 }

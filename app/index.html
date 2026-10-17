@@ -58,19 +58,30 @@
       <section id="table-panel" class="panel table-panel" aria-labelledby="table-heading">
         <div class="panel-head">
           <h2 id="table-heading" class="panel-title">SIMBAD objects in the field</h2>
-          <p id="row-count" class="row-count"></p>
+          <div class="panel-tools">
+            <p id="row-count" class="row-count"></p>
+            <div class="sort-control">
+              <label for="sort">Sort</label>
+              <select id="sort" name="sort" autocomplete="off">
+                <option value="refs" selected>Most studied</option>
+                <option value="sep">Nearest to centre</option>
+              </select>
+            </div>
+          </div>
         </div>
+        <ul id="field-census" class="census" aria-label="SIMBAD object types in the field, by count"></ul>
         <p id="table-error" class="alert" role="alert"></p>
-        <p id="table-status" class="table-status" aria-live="polite">Objects within half the field of view, nearest first, appear here after Explore.</p>
+        <p id="table-status" class="table-status" aria-live="polite">The 200 most-referenced SIMBAD objects within half the field of view appear here after Explore.</p>
         <div class="table-scroll">
           <table id="objects-table">
             <thead>
               <tr>
                 <th scope="col">main_id</th>
                 <th scope="col">Type</th>
+                <th scope="col" id="col-refs" class="num" aria-sort="descending">Refs</th>
                 <th scope="col" class="num">RA (°)</th>
                 <th scope="col" class="num">Dec (°)</th>
-                <th scope="col" class="num" aria-sort="ascending">Sep (′)</th>
+                <th scope="col" id="col-sep" class="num">Sep (′)</th>
               </tr>
             </thead>
             <tbody></tbody>

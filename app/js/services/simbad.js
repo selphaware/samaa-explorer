@@ -1,6 +1,6 @@
 // Catalogue service adapter: SIMBAD TAP (synchronous ADQL, JSON output).
 // Builds the ADQL, calls TAP, parses the JSON and throws ServiceErrors. No DOM access.
-import { fetchFromService, shorten } from './http.js';
+import { ServiceError, fetchFromService, shorten } from './http.js';
 
 export const SERVICE = 'SIMBAD TAP';
 export const ENDPOINT = 'https://simbad.cds.unistra.fr/simbad/sim-tap/sync';
@@ -9,32 +9,47 @@ export const ACKNOWLEDGEMENT =
 
 // Every query carries TOP n. Without it SIMBAD silently truncates at 50,000 rows.
 export const MAX_ROWS = 500;
+// One census row per object type: the otypedef vocabulary bounds it (154 groups in the densest
+// field the FoV limit allows), so this cap never truncates.
+const CENSUS_TOP = 500;
 
-/** Nearest `limit` objects within `radiusDeg` of (ra, dec), sorted by separation ascending. */
+/**
+ * The `limit` most-referenced objects within `radiusDeg` of (ra, dec): nbref descending, ties by
+ * separation ascending. ADQL sort keys must be bare names; `ORDER BY b.nbref` is an HTTP 400.
+ */
 export function coneRowsAdql({ ra, dec, radiusDeg, limit }) {
   const top = checkLimit(limit);
   const [a, d, r] = [ra, dec, radiusDeg].map(adqlNumber);
   return [
-    `SELECT TOP ${top} b.main_id, b.otype, od.description AS otype_desc, b.ra, b.dec,`,
+    `SELECT TOP ${top} b.main_id, b.otype, od.description AS otype_desc, b.nbref, b.ra, b.dec,`,
     `       DISTANCE(POINT('ICRS', b.ra, b.dec), POINT('ICRS', ${a}, ${d})) AS sep_deg`,
     'FROM basic b LEFT JOIN otypedef od ON od.otype = b.otype',
-    `WHERE CONTAINS(POINT('ICRS', b.ra, b.dec), CIRCLE('ICRS', ${a}, ${d}, ${r})) = 1`,
-    'ORDER BY sep_deg ASC',
+    `WHERE ${inCone(a, d, r)}`,
+    'ORDER BY nbref DESC, sep_deg ASC',
   ].join('\n');
 }
 
-/** Total number of objects in the same cone. */
-export function coneCountAdql({ ra, dec, radiusDeg }) {
+/** Object counts by type description over the whole cone; SUM(n) is the field total. */
+export function censusAdql({ ra, dec, radiusDeg }) {
   const [a, d, r] = [ra, dec, radiusDeg].map(adqlNumber);
   return [
-    'SELECT TOP 1 COUNT(*) AS n FROM basic',
-    `WHERE CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', ${a}, ${d}, ${r})) = 1`,
+    `SELECT TOP ${CENSUS_TOP} od.description AS otype_desc, COUNT(*) AS n`,
+    'FROM basic b LEFT JOIN otypedef od ON od.otype = b.otype',
+    `WHERE ${inCone(a, d, r)}`,
+    'GROUP BY od.description',
+    'ORDER BY n DESC',
   ].join('\n');
+}
+
+// The 'ICRS' literal is required: POINT(ra, dec) / CIRCLE(ra, dec, r) without it is an HTTP 400.
+function inCone(a, d, r) {
+  return `CONTAINS(POINT('ICRS', b.ra, b.dec), CIRCLE('ICRS', ${a}, ${d}, ${r})) = 1`;
 }
 
 /**
+ * Rows in server order (most referenced first). `nbref` is never null in SIMBAD (0 = unreferenced).
  * @returns {Promise<Array<{mainId: string, otype: string|null, otypeDesc: string|null,
- *   ra: number|null, dec: number|null, sepDeg: number|null}>>}
+ *   nbref: number|null, ra: number|null, dec: number|null, sepDeg: number|null}>>}
  */
 export async function coneSearch({ ra, dec, radiusDeg, limit = 200, timeoutMs } = {}) {
   const records = await runAdql(coneRowsAdql({ ra, dec, radiusDeg, limit }), { timeoutMs });
@@ -42,18 +57,25 @@ export async function coneSearch({ ra, dec, radiusDeg, limit = 200, timeoutMs } 
     mainId: r.main_id ?? '',
     otype: r.otype ?? null,
     otypeDesc: r.otype_desc ?? null,
+    nbref: r.nbref == null ? null : Number(r.nbref),
     ra: r.ra ?? null,
     dec: r.dec ?? null,
     sepDeg: r.sep_deg ?? null,
   }));
 }
 
-/** @returns {Promise<number>} */
-export async function coneCount({ ra, dec, radiusDeg, timeoutMs } = {}) {
-  const records = await runAdql(coneCountAdql({ ra, dec, radiusDeg }), { timeoutMs });
-  const n = records.length ? Number(records[0].n) : NaN;
-  if (!Number.isFinite(n)) throw new Error('count query returned no number');
-  return n;
+/**
+ * Groups by count descending. `otypeDesc` is null for objects whose otype has no otypedef row;
+ * that group is real and counts towards the total.
+ * @returns {Promise<{groups: Array<{otypeDesc: string|null, n: number}>, total: number}>}
+ */
+export async function fieldCensus({ ra, dec, radiusDeg, timeoutMs } = {}) {
+  const records = await runAdql(censusAdql({ ra, dec, radiusDeg }), { timeoutMs });
+  const groups = records.map((r) => ({ otypeDesc: r.otype_desc ?? null, n: Number(r.n) }));
+  if (groups.some((g) => !Number.isInteger(g.n) || g.n < 0)) {
+    throw new ServiceError(SERVICE, 'response', `${SERVICE} returned a census without integer counts`);
+  }
+  return { groups, total: groups.reduce((sum, g) => sum + g.n, 0) };
 }
 
 /** Run one ADQL query; resolves with one plain object per row, keyed by column name. */
