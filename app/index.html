@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Samaa Explorer</title>
+  <meta name="description" content="Survey image cutouts from CDS hips2fits and catalogued objects from SIMBAD for any patch of sky.">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div class="page">
+    <header class="masthead">
+      <h1>Samaa Explorer</h1>
+      <p class="tagline">Survey image and catalogued objects for a patch of sky. Coordinates are ICRS, in decimal degrees.</p>
+    </header>
+
+    <form id="controls" class="controls" novalidate>
+      <div class="field field-preset">
+        <label for="preset">Preset</label>
+        <select id="preset" name="preset"></select>
+      </div>
+      <div class="field field-coord">
+        <label for="ra">RA (°)</label>
+        <input id="ra" name="ra" type="text" inputmode="decimal" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field field-coord">
+        <label for="dec">Dec (°)</label>
+        <input id="dec" name="dec" type="text" inputmode="decimal" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field field-fov">
+        <label for="fov">FoV (°)</label>
+        <input id="fov" name="fov" type="text" inputmode="decimal" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field field-survey">
+        <label for="survey">Survey</label>
+        <select id="survey" name="survey"></select>
+      </div>
+      <button id="explore" type="submit">Explore</button>
+      <p id="form-error" class="alert" role="alert"></p>
+    </form>
+
+    <main class="workspace">
+      <section id="image-panel" class="panel image-panel" aria-labelledby="image-heading">
+        <div class="panel-head">
+          <h2 id="image-heading" class="panel-title">Survey image</h2>
+        </div>
+        <p id="image-error" class="alert" role="alert"></p>
+        <figure class="image-figure">
+          <div class="image-frame">
+            <img id="sky-image" alt="" hidden>
+            <p id="image-status" class="frame-status">Pick a preset or enter coordinates, then press Explore.</p>
+          </div>
+          <figcaption id="image-caption" class="caption"></figcaption>
+        </figure>
+      </section>
+
+      <section id="table-panel" class="panel table-panel" aria-labelledby="table-heading">
+        <div class="panel-head">
+          <h2 id="table-heading" class="panel-title">SIMBAD objects in the field</h2>
+          <p id="row-count" class="row-count"></p>
+        </div>
+        <p id="table-error" class="alert" role="alert"></p>
+        <p id="table-status" class="table-status" aria-live="polite">Objects within half the field of view, nearest first, appear here after Explore.</p>
+        <div class="table-scroll">
+          <table id="objects-table">
+            <thead>
+              <tr>
+                <th scope="col">main_id</th>
+                <th scope="col">Type</th>
+                <th scope="col" class="num">RA (°)</th>
+                <th scope="col" class="num">Dec (°)</th>
+                <th scope="col" class="num" aria-sort="ascending">Sep (′)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer class="credits">
+      <p>This research made use of hips2fits, a service provided by CDS.</p>
+      <p>This research has made use of the SIMBAD database, operated at CDS, Strasbourg, France (Wenger et al. 2000, A&amp;AS 143, 9).</p>
+    </footer>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
