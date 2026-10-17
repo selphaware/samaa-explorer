@@ -40,14 +40,14 @@ paths (`css/styles.css`, `js/main.js`) must work from that root. Add
 
 | Element | Requirement |
 |---|---|
-| `select#preset` | one `<option>` per preset in section 3, text like `Andromeda (M31)`. Changing it fills `#ra`, `#dec`, `#fov` (and may set the survey). It does **not** fetch by itself. |
+| `select#preset` | one `<option>` per preset in section 3, text like `Andromeda (M31)`. Changing it fills `#ra`, `#dec`, `#fov` only — the survey is the user's choice and persists across presets. It does **not** fetch by itself. |
 | `input#ra`, `input#dec`, `input#fov` | decimal degrees, ICRS. Text or number inputs. |
 | `select#survey` | option values are **full HiPS IDs** (section 4); labels human-readable. Default `CDS/P/DSS2/color`. |
 | `button#explore` | the only trigger for network activity. Disabled (or ignored) while a request is in flight. |
 | `img#sky-image` | the cutout. Rendered at least 200 CSS px wide. `alt` text set. |
-| `#image-caption` | survey name, centre RA/Dec in decimal degrees (≥ 4 dp), FoV in degrees, and the hips2fits credit. |
-| `#row-count` | exactly the shape `Showing 200 of 37554 objects within 0.75°` (shown, total, radius). |
-| `table#objects-table` | `<thead>` + `<tbody>`. Columns, in order: `main_id`, `Type`, `RA (°)`, `Dec (°)`, `Sep (′)`. Rows sorted by separation ascending. |
+| `#image-caption` | survey human label **and** its full HiPS ID (the ID is what reproduces the image), centre RA/Dec in decimal degrees (≥ 4 dp), FoV in degrees, and the hips2fits credit. |
+| `#row-count` | exactly the shape `Showing 200 of <total> objects within 0.75°` (shown, total, radius). `<total>` comes from the count query at run time — it was 37,554 for M31 at 0.75° on 2026-10-17 and will drift as SIMBAD grows; **never hard-code it**. If the count query failed but rows succeeded: `Showing 200 objects within 0.75° (total unavailable)`. |
+| `table#objects-table` | `<thead>` + `<tbody>`. Columns, in order: `main_id`, `Type`, `RA (°)`, `Dec (°)`, `Sep (′)`. `Type` shows `od.description` (falls back to the `otype` code when the join yields null); the raw `otype` code goes in the cell's `title`. Rows sorted by separation ascending. |
 | `[role="alert"]` elements | one for form validation (`#form-error`), one for the image panel (`#image-error`), one for the table panel (`#table-error`). Empty when there is no error. Error text names the **service** and, for `fetch()` calls, the **HTTP status** (e.g. `Catalogue error: SIMBAD TAP returned HTTP 503`). A timeout says `timed out`. |
 | Loading state | while requests are in flight, the affected panel shows visible loading text (e.g. `Loading…`) and/or `aria-busy="true"`. |
 | Footer | both acknowledgements (sections 4 and 5), always visible. |
@@ -140,8 +140,17 @@ SELECT TOP 1 COUNT(*) AS n FROM basic
 WHERE CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {ra}, {dec}, {radius})) = 1
 ```
 
-Separation in the table = `sep_deg × 60` arcminutes, 2 dp. Run both queries in parallel
-(`Promise.all`), with an `AbortController` timeout (30 s) that reports `timed out`.
+Separation in the table = `sep_deg × 60` arcminutes, 2 dp. Run both queries in parallel with
+`Promise.allSettled` — **not** `Promise.all`, which would discard 200 good rows because the count
+query failed — each with its own `AbortController` timeout (30 s) that reports `timed out`.
+Outcomes:
+
+| rows | count | render |
+|---|---|---|
+| ok | ok | table + `Showing 200 of <total> objects within 0.75°` |
+| ok | failed | table + `Showing 200 objects within 0.75° (total unavailable)`; `#table-error` carries the count query's service name and status |
+| failed | any | error state in `#table-error`; table body cleared; `#row-count` empty |
+| ok, 0 rows | ok, 0 | empty state `No catalogued objects in this field` |
 
 Acknowledgement (show in the UI):
 *This research has made use of the SIMBAD database, operated at CDS, Strasbourg, France.*
@@ -152,7 +161,8 @@ Acknowledgement (show in the UI):
 1. Open page → presets populated, Andromeda selected by default, inputs filled, nothing fetched yet.
 2. Click **Explore** → both panels show a loading state; Explore disabled.
 3. Within a few seconds: DSS2 colour image of M31 (galaxy visibly in frame) with caption;
-   table of the nearest 200 SIMBAD objects sorted by separation; `Showing 200 of 37554 objects within 0.75°`.
+   table of the nearest 200 SIMBAD objects sorted by separation; `Showing 200 of <total> objects within 0.75°`
+   (`<total>` from the live count query — 37,554 on 2026-10-17).
 4. Change FoV or survey, click Explore → image and table replaced (old content cleared or
    visibly marked stale while loading).
 5. RA `400` → inline message in `#form-error`, no request.
@@ -183,3 +193,23 @@ Acknowledgement (show in the UI):
 
 Backend / proxy (CORS is open), authentication, canvas pixel manipulation, catalogue paging
 beyond the first 200, browser support other than current Chromium.
+
+## 9. Look and layout (the gate cannot judge this — the human reviews it)
+
+- Light theme. Near-white page background, one dark neutral for text, one muted accent
+  (a desaturated blue) for the Explore button, links and focus rings. No gradients, no
+  shadows heavier than a 1 px border, no decorative astronomy imagery or starfield backgrounds.
+- Typography: a system sans-serif stack for UI text; a monospace stack for RA, Dec, FoV and
+  the table's coordinate and separation columns so digits align. Tabular numerals
+  (`font-variant-numeric: tabular-nums`) where supported.
+- Layout ≥ 1100 px: controls in a single row across the top (preset, RA, Dec, FoV, survey,
+  Explore); below it the image panel on the left (800 px square, scaling down to fit) and
+  the objects table on the right filling the remaining width. Below ~900 px everything
+  stacks vertically, image first.
+- Table: sticky header, very-low-contrast zebra rows, right-aligned numeric columns,
+  `main_id` links to `https://simbad.cds.unistra.fr/simbad/sim-id?Ident=<url-encoded main_id>`
+  opening in a new tab (`rel="noopener"`).
+- Caption and footer in a smaller, lower-contrast size. Credits are plain text, not badges.
+- Pressing Enter in any of the three numeric inputs triggers Explore.
+- Visible keyboard focus states on every control; the Explore button's disabled state is
+  obvious without relying on colour alone.
