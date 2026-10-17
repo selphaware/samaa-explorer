@@ -1,0 +1,16 @@
+﻿# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Build-loop harness output (screenshots etc.)
+verify/artifacts/
+
+# Claude Code local-only overrides (settings.json itself IS committed)
+.claude/settings.local.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
