@@ -6,9 +6,9 @@ a field of view and a survey, clicks **Explore**, and the page shows a REAL surv
 from CDS hips2fits plus a table of REAL SIMBAD objects in that field.
 
 Every endpoint, column name, number and quirk below was measured live from this machine on
-**2026-10-17** (Phase 0, re-measured the same evening for revision 1: notability ordering and the
-field census). Where this spec and a live response disagree, the live response wins — but say so
-in your report.
+**2026-10-17** (Phase 0, re-measured the same evening for revision 1 — notability ordering and the
+field census — and again for revision 2 — the preset library, Custom positions and shareable URLs).
+Where this spec and a live response disagree, the live response wins — but say so in your report.
 
 **Definition of done** (the only one):
 
@@ -29,29 +29,33 @@ exits 0 and prints `GATE PASS`.
 | `app/js/main.js` | UI wiring, state, loading / error / empty states, rendering |
 | `app/js/services/hips2fits.js` | image service adapter: builds the cutout URL (and nothing UI-related) |
 | `app/js/services/simbad.js` | catalogue service adapter: builds ADQL, calls TAP, parses JSON, throws typed errors |
-| `app/js/presets.js` | the preset list (section 3) |
+| `app/js/presets.js` | **loader** for the preset library (section 3): `fetch('data/presets.json')`, validate the shape, expose the list in file order and a lookup by `id`. No DOM |
+| `app/data/presets.json` | the preset library — **generated data** (section 3). Read by `presets.js`; never hand-edited, never replaced by a hard-coded list |
 | `app/js/services/http.js` | shared fetch plumbing (added in slice 1): one `AbortController` timeout per request; every failure becomes a `ServiceError` carrying service name, kind and HTTP status. No DOM |
+| `tools/preset_catalogue.csv`, `tools/build_presets.py` (repo root) | the curated list of **names** and the resolver that turns it into `app/data/presets.json` (section 3). Outside `app/`; the gate does not run them and the build agent does not edit them |
 | `serve.py` (repo root) | static server for humans: serves `app/` on `http://localhost:8765` (port as first argument) with `.js` pinned to `text/javascript` and `.css` to `text/css`; standard library only. **The gate neither requires nor uses it** |
-| `README.md` (repo root) | what the page is, how to run it, how to verify it, both acknowledgements, architecture notes |
+| `README.md` (repo root) | what the page is, how to run it, how to verify it, both acknowledgements, architecture notes, how to add a preset |
 
-The six `app/` files above the `http.js` row must exist and be non-empty — the gate checks exactly
-those six; `http.js` is part of the layout but not gate-checked. Service adapters must be
-importable without touching the DOM, so a new provider can be added without editing the UI. The
-page is served from `app/` as web root over `http://localhost:<port>/` (the gate uses Python's
-`http.server` with pinned MIME types; `serve.py` does the same for a human); relative paths
-(`css/styles.css`, `js/main.js`) must work from that root. Add `<link rel="icon" href="data:,">`
-so Chromium does not log a favicon 404 as a console error.
+The six `app/` files above the `presets.json` row plus `app/data/presets.json` must exist and be
+non-empty — the gate checks exactly those seven; `http.js` is part of the layout but not gate-checked.
+Service adapters must be importable without touching the DOM, so a new provider can be added without
+editing the UI. The page is served from `app/` as web root over `http://localhost:<port>/` (the gate
+uses Python's `http.server` with pinned MIME types, `.json` as `application/json`; `serve.py` does the
+same for a human); relative paths (`css/styles.css`, `js/main.js`, `data/presets.json`) must work from
+that root. Add `<link rel="icon" href="data:,">` so Chromium does not log a favicon 404 as a console
+error.
 
 ## 2. UI contract (ids are part of the contract — the gate looks for them first)
 
 | Element | Requirement |
 |---|---|
-| `select#preset` | one `<option>` per preset in section 3, text like `Andromeda (M31)`. Changing it fills `#ra`, `#dec`, `#fov` only — the survey is the user's choice and persists across presets. It does **not** fetch by itself. |
+| `select#preset` | **First option `value="custom"`, text `Custom`.** Then one `<optgroup label="<category>">` per category in library order (`Galaxies`, `Nebulae`, `Star clusters`, `Stars`, `Deep fields`, `Exotic & high-energy`), each holding one `<option value="<id>">` per preset of that category, text = the label, in file order. ≥ 250 named options (345 on 2026-10-17). Changing to a named preset fills `#ra`, `#dec`, `#fov` only — the survey is the user's choice and persists across presets — stores `localStorage['samaa.lastPreset'] = <id>` and does **not** fetch. **Custom semantics:** on `input` in any of `#ra`, `#dec`, `#fov` set the select to `custom`, keep `{ra, dec, fov}` (the raw strings as typed) as the Custom set in memory and in `localStorage['samaa.custom']` (JSON), and set `samaa.lastPreset` to `custom`. Selecting `custom` restores the stored set, or leaves the inputs as they are if nothing is stored. **On load**, in this order: a URL hash wins (see *Shareable URL* below); else if `samaa.lastPreset` is `custom` and a Custom set is stored, restore it and select Custom; else select `m31` and fill its values. Only Custom is remembered across reloads; a named last selection falls back to `m31`. Nothing is fetched on load unless a hash asks for it. Filtering (next row) never changes the selection. |
+| `input#preset-filter` | `type="search"`, placeholder `Filter presets…`, directly above the select. On `input`: trim the query; case-insensitive substring match against each preset's label **and** `main_id`; a non-matching named option gets both the `hidden` and the `disabled` attribute; an `<optgroup>` with no matching option gets `hidden`; the `custom` option is never filtered. An empty query restores everything. The current selection never changes because of filtering, even when the selected option is filtered out. Playwright and the gate judge options by these properties, not by geometry (section 7). |
 | `input#ra`, `input#dec`, `input#fov` | decimal degrees, ICRS. Text or number inputs. |
 | `select#survey` | option values are **full HiPS IDs** (section 4); labels human-readable. Default `CDS/P/DSS2/color`. |
 | `button#explore` | the only trigger for network activity. Disabled (or ignored) while a request is in flight. |
 | `img#sky-image` | the cutout. Rendered at least 200 CSS px wide. `alt` text set. |
-| `#image-caption` | survey human label **and** its full HiPS ID (the ID is what reproduces the image), centre RA/Dec in decimal degrees (≥ 4 dp), FoV in degrees, and the hips2fits credit. |
+| `#image-caption` | survey human label **and** its full HiPS ID (the ID is what reproduces the image), centre RA/Dec in decimal degrees (≥ 4 dp), FoV in degrees, the hips2fits credit, **and the target**: the preset label and `main_id` (e.g. `Andromeda (M31) · M  31`) when a named preset was active at Explore time, `Custom position` when Custom was. |
 | `#row-count` | exactly the shape `Showing 200 of <total> objects within 0.75°` (shown, total, radius). `<total>` is the **sum of the census counts** (`SUM(n)` over every group, section 5) at run time — 37,554 for M31 at 0.75° on 2026-10-17, identical to `COUNT(*)`; it drifts as SIMBAD grows, so **never hard-code it**. Thousands separators are fine (`37,554`). If the census query failed but rows succeeded: `Showing 200 objects within 0.75° (total unavailable)`. |
 | `table#objects-table` | `<thead>` + `<tbody>`. Columns, in order: `main_id`, `Type`, `Refs`, `RA (°)`, `Dec (°)`, `Sep (′)`. `Type` shows `od.description` (falls back to the `otype` code when the join yields null); the raw `otype` code goes in the cell's `title`. `Refs` = `nbref` (SIMBAD's reference count), an integer, thousands-separated (`13,839`). **Default order: `Refs` descending, ties broken by `Sep` ascending** — exactly the order the server returns; the client does **not** re-sort on load. The active sort column's `<th>` carries `aria-sort` (`descending` on load, `ascending` after switching to separation). |
 | `select#sort` | in the table panel head. Exactly two options: value `refs`, label `Most studied` (selected on load) and value `sep`, label `Nearest to centre`. Changing it re-sorts the 200 loaded rows **client-side** with a numeric compare (`"13,839"` as a string sorts wrong); **no network request**. |
@@ -69,18 +73,96 @@ and make **no** request):
 
 Cone radius for the catalogue = `FoV / 2` degrees (so FoV 1.5° → radius 0.75°).
 
-## 3. Presets (ICRS J2000, decimal degrees — resolved via CDS Sesame and cross-checked in SIMBAD TAP, 2026-10-17)
+**Shareable URL.** A view is a URL. When Explore passes validation and the requests go out, write the
+hash with `history.replaceState(null, '', '#ra=<n>&dec=<n>&fov=<n>&hips=<encodeURIComponent(hipsId)>[&preset=<id>]')`
+— no navigation, no `hashchange`. `ra`/`dec`/`fov` are the validated numbers as sent to the services;
+`preset` is the selected named preset's `id` and is **omitted when Custom is active**. (The hash is
+written at request time rather than after the responses so that a failing service still leaves a
+URL to retry; the gate reads it after a successful Explore.) On load with a non-empty hash: parse
+`location.hash.slice(1)` with `URLSearchParams`; `ra`, `dec`, `fov`, `hips` are all required; validate
+`ra`/`dec`/`fov` with the rules above and require `hips` to be one of the `select#survey` option
+values; fill the three inputs; set the survey; if `preset` is present and is a known `id`, select it,
+otherwise select `custom` **and** store the values as the Custom set (a shared custom view becomes the
+user's current custom position); then run Explore automatically, with no click. **Matching coordinates
+never auto-select a preset** — only `preset=<id>` does; the gate opens the M42 coordinates without
+`preset` and expects `custom`. An invalid or incomplete hash → the usual message in `#form-error`
+(e.g. `Link has an invalid RA: 400`), nothing fetched, the select left at the plain-load default. The
+page parses the hash on load only; it does not listen to `hashchange`.
 
-| Label | SIMBAD main_id | RA | Dec | Default FoV (°) | Note |
+## 3. Presets — the library (`app/data/presets.json`, generated 2026-10-17)
+
+The preset library is **data, not code**. `tools/preset_catalogue.csv` lists 345 named places — no
+coordinates — in six categories, and `tools/build_presets.py` (standard library, pinned interpreter)
+resolves every name through SIMBAD TAP (`ident` → `basic` → `otypedef`), falls back to CDS Sesame
+for the rest, refuses to write anything if a single name stays unresolved or two entries land within
+0.001° of each other, and writes `app/data/presets.json` with provenance. On 2026-10-17 all 345 names
+resolved: 339 in four batch queries, 5 one by one (`Cyg X-1` → `HD 226868`, `Cyg X-3`, `Sco X-1`,
+`GRS 1915+105`, `1E 0657-56`), 1 via Sesame (`SGR 1806-20` → `PSR J1808-2024`), 0 failed. The
+build agent **reads** that file; it never edits it. If an entry looks wrong, report its `id` — the fix
+is a CSV row and a re-run of the tool, both outside `app/`.
+
+File shape (real first entry):
+
+```json
+{ "generated_at": "2026-10-17T22:51:06Z",
+  "source": "SIMBAD TAP (basic/ident) via tools/build_presets.py",
+  "catalogue": "tools/preset_catalogue.csv",
+  "fov_rule": "fov_override, else clamp(1.5 x galdim_majaxis[arcmin] / 60, 0.1, 3.0) deg, else category default {...}",
+  "count": 345,
+  "presets": [
+    { "id": "m31", "label": "Andromeda (M31)", "category": "Galaxies", "query_name": "M 31",
+      "main_id": "M  31", "ra": 10.68470833, "dec": 41.26875, "fov": 1.5, "fov_source": "override",
+      "size_arcmin": 199.53, "otype": "AGN", "otype_desc": "Active Galaxy Nucleus", "nbref": 13839,
+      "resolved_by": "SIMBAD TAP", "resolved_via": "tap-batch", "resolved_at": "2026-10-17" },
+    ... ] }
+```
+
+- `presets` is sorted by category in the order **Galaxies · Nebulae · Star clusters · Stars · Deep
+  fields · Exotic & high-energy**, then by label in natural order (`M2` before `M10`). Render the
+  select in exactly that order: one `<optgroup>` per category, options in file order.
+- Fields the page relies on: `id` (stable slug = option value), `label` (option text), `category`
+  (optgroup label), `main_id` (SIMBAD identifier **verbatim**, runs of spaces included — it is what
+  the filter matches and the caption shows), `ra`/`dec` (ICRS J2000 degrees, 8 dp), `fov` (degrees,
+  2 dp). Provenance fields: `query_name` (the CSV name), `fov_source` (`override` | `size` |
+  `category`), `size_arcmin` (`galdim_majaxis`, null when SIMBAD has none), `otype`, `otype_desc`
+  (null allowed — today none is), `nbref`, `resolved_by` (`SIMBAD TAP` or `CDS Sesame (...)`),
+  `resolved_via`, `resolved_at` (`YYYY-MM-DD`).
+- Counts on 2026-10-17: Galaxies 81 · Nebulae 50 · Star clusters 107 · Stars 47 · Deep fields 18 ·
+  Exotic & high-energy 42 = **345** — all 110 Messier and all 109 Caldwell objects among them, the 25
+  brightest stars and the famous nearby ones, 18 deep/survey fields, 42 high-energy and landmark
+  objects. The gate's floor is **250**. FoVs: 35 from CSV overrides, 224 from SIMBAD's angular size,
+  86 category defaults (Galaxies 0.5, Nebulae 1.0, Star clusters 1.0, Stars 0.5, Deep fields 0.2,
+  Exotic 0.3); range 0.1–3.0°.
+- `js/presets.js` loads the file: `fetch('data/presets.json')` relative to the page, parse, check that
+  `presets` is a non-empty array whose entries carry `id`, `label`, `category`, `main_id`, `ra`, `dec`,
+  `fov`, expose the list and a `byId` lookup. A failed or malformed fetch is an error in
+  `#form-error` (`Preset library could not be loaded: HTTP 404`) — never an empty select, never a
+  hard-coded fallback list. Populate the select as soon as the promise resolves (the gate waits up to
+  6 s for the `Andromeda (M31)` option); the default selection, the stored Custom set and the URL hash
+  are applied after the library has loaded.
+- The eight original presets keep their labels and FoVs and remain the gate's anchors (M31 is the one
+  the gate explores):
+
+| `id` | Label | `main_id` | RA | Dec | FoV (°) |
 |---|---|---|---|---|---|
-| Andromeda (M31) | `M  31` | 10.68470833 | +41.26875 | 1.5 | otype `AGN` in SIMBAD. **The gate tests this one.** |
-| Orion Nebula (M42) | `M  42` | 83.8201 | −5.3876 | 1.0 | brief said 83.8221 / −5.3911 |
-| Sagittarius A* | `NAME Sgr A*` | 266.41681662 | −29.00782497 | 0.5 | dense field: 27,760 objects within 0.75° |
-| M87 | `M  87` | 187.70593077 | +12.39112325 | 0.5 | |
-| Hubble Ultra Deep Field | `NAME Hubble Ultra Deep Field` | 53.1625 | −27.79138889 | 0.2 | 61,280 objects within 0.75° (CDF-South) — densest preset |
-| Crab Nebula (M1) | `M   1` | 83.6324 | +22.0174 | 0.3 | brief said 83.6331 / +22.0145 |
-| Pleiades (M45) | `Cl Melotte   22` | 56.60083333 | +24.11388889 | 2.0 | **brief was off by 0.15° in RA** (56.75) |
-| Betelgeuse | `* alf Ori` | 88.79293899 | +7.407064 | 0.5 | |
+| `m31` | Andromeda (M31) | `M  31` | 10.68470833 | +41.26875 | 1.5 |
+| `m42` | Orion Nebula (M42) | `M  42` | 83.8201 | −5.3876 | 1.0 |
+| `sgr-a-star` | Sagittarius A* | `NAME Sgr A*` | 266.41681662 | −29.00782497 | 0.5 |
+| `m87` | M87 | `M  87` | 187.70593077 | +12.39112325 | 0.5 |
+| `hudf` | Hubble Ultra Deep Field | `NAME Hubble Ultra Deep Field` | 53.1625 | −27.79138889 | 0.2 |
+| `m1` | Crab Nebula (M1) | `M   1` | 83.6324 | +22.0174 | 0.3 |
+| `m45` | Pleiades (M45) | `Cl Melotte   22` | 56.60083333 | +24.11388889 | 2.0 |
+| `betelgeuse` | Betelgeuse | `* alf Ori` | 88.79293899 | +7.407064 | 0.5 |
+
+- Live spot check: the gate picks five `id`s with `random.Random(20261017).sample(sorted(ids), 5)` and
+  re-resolves their `main_id` through TAP; a drift above 0.01° or an unknown `main_id` means SIMBAD
+  changed and the tool must be re-run — it is reported as a deliverable failure naming the preset.
+- **No Solar System bodies** (they move) and **no proper-motion correction**: every position is
+  SIMBAD's ICRS J2000 value on `resolved_at`. Barnard's Star moves 10″/yr; that is fine for a 0.5°
+  field.
+- Adding a preset: one CSV row (`id,label,category,query_name,fov_override`; `query_name` in SIMBAD's
+  own form — `NGC 869`, not `C 14`, because Caldwell numbers are not SIMBAD identifiers, see section 7),
+  run the tool, commit the JSON.
 
 ## 4. Image service — CDS hips2fits (verified live)
 
@@ -209,7 +291,8 @@ Acknowledgement (show in the UI):
 
 ## 6. Behaviour the user sees
 
-1. Open page → presets populated, Andromeda selected by default, inputs filled, nothing fetched yet.
+1. Open page → the library loads (345 presets in six groups behind a `Custom` first option),
+   Andromeda (M31) selected by default, inputs filled, nothing fetched yet.
 2. Click **Explore** → both panels show a loading state; Explore disabled.
 3. Within a few seconds: DSS2 colour image of M31 (galaxy visibly in frame) with caption; the
    field census above the table (2026-10-17 values: `Star 4,728 · Red Supergiant Candidate 3,871 ·
@@ -229,6 +312,16 @@ Acknowledgement (show in the UI):
    only when a 2xx response really has zero rows.
 8. hips2fits failure → `#image-error` names the image service; the `<img>` is hidden or cleared
    rather than left as a broken icon or a stale image.
+9. Type RA `83.82` over a preset → the select shows **Custom**; pick Andromeda → the inputs change to
+   M31's values; pick Custom → `83.82` is back. Reload → still Custom with `83.82`, nothing fetched.
+10. Type `crab` in the filter → only `Crab Nebula (M1)` and `Crab Pulsar (PSR B0531+21)` (plus
+    Custom) remain selectable and the empty groups disappear; clear the filter → all 345 are back;
+    the selection never moved.
+11. Explore → the URL becomes `…/index.html#ra=10.68470833&dec=41.26875&fov=1.5&hips=CDS%2FP%2FDSS2%2Fcolor&preset=m31`;
+    paste it into a new tab → the same view loads and runs by itself (Andromeda selected). A link
+    without `preset=` (e.g. `#ra=83.8201&dec=-5.3876&fov=1.0&hips=CDS%2FP%2FDSS2%2Fcolor`) opens as
+    Custom and runs; a link with RA `400` shows the validation message and fetches nothing.
+12. After Explore the caption names the target (`Andromeda (M31) · M  31`, or `Custom position`).
 
 ## 7. Known traps (each one was observed or verified in Phase 0)
 
@@ -248,9 +341,19 @@ Acknowledgement (show in the UI):
 | `null` type description in the census or table | a real group (objects whose `otype` has no `otypedef` row); label it `Unclassified`, never drop it — it is part of the total |
 | Catalogue `catch` → empty state | indistinguishable from an empty sky; gate injects a 503 and expects to see `503` and `SIMBAD` in an alert |
 | Windows + Python `http.server` serving `.js` as `text/plain` | module scripts refuse to run; the gate's server pins `text/javascript`; if you run your own server, do the same |
-| `select_option` on an already-selected preset | fires no `change` event; fill inputs on load as well as on change |
+| `select_option` on an already-selected preset | Playwright 1.64 dispatches `input` **and** `change` even when the value does not change (measured; an earlier version of this row said the opposite). A real user re-picking the same option fires nothing — so fill the inputs on load as well as on `change`, and make the handler idempotent |
 | Favicon 404 | logs a console error; add `<link rel="icon" href="data:,">` |
 | Main identifiers contain runs of spaces (`M  31`, `Cl Melotte   22`) | render with `textContent`; do not trim internal whitespace if you want exact matching |
+| Caldwell numbers (`C 14`) as SIMBAD identifiers | they are **not** identifiers: all 109 of `C 1`…`C 109` miss in TAP and `C 14` is "Nothing found" in Sesame. The catalogue carries the NGC/IC/Melotte/Sharpless/NAME designation (`NGC 869` for C14, `Cl Melotte 25` for C41, `Sh 2-155` for C9, `NAME Coalsack` for C99) and keeps `(C14)` in the label |
+| Attributing a batch `ident` answer by string equality | TAP matches `ident.id` ignoring case and whitespace (`M 31`, `M31`, `m  31` all hit) but returns the **canonical** spelling: `M  31`, `NGC   224`, `X Cyg X-1` for `Cyg X-1`. `UNION` is rejected (HTTP 400 "UNION is not supported in ADQL"), ADQL has no `CASE`/`VALUES`. The tool compares whitespace-free lower-case keys and re-asks the leftovers one at a time |
+| Long `IN` lists via GET | 400 names (6.6 KB URL) answer in 0.7 s; 500 names (8.2 KB) → **HTTP 414** from Apache. POST takes 1000 names in 1.2 s. The tool uses POST, 100 per batch |
+| `galdim_majaxis` | arcminutes (`TAP_SCHEMA`: unit `arcmin`, ucd `phys.angSize.smajAxis`). Null for 6 Messier (M 8, 40, 43, 73, 78, 82) and 13 Caldwell objects; some values are 10× off (M 36 and NGC 6231 = 120′, M 39 = 120.4′, NGC 2362 = 104′) → `fov_override` in the CSV; tiny values (0.1′ planetaries) hit the 0.1° floor |
+| Sesame answers | HTTP 200 with **`Content-Type: text/plain`** whose body is XML; a hit has `<Resolver name="Sc=Simbad …">` with `<jradeg>`, `<jdedeg>`, `<otype>`, `<oname>` (= main_id), `<nrefs>`; a miss is **still HTTP 200** with `<INFO> *** Nothing found *** </INFO>` and no `<Resolver>`; bodies carry stray `<!--- … -->` comments, so parse with regexes, not an XML parser |
+| Judging filtered options by visibility | every `<option>` of a closed `<select>` has zero client rects, `checkVisibility() === false` and Playwright `is_visible() === false` — selectable or not. Test the `hidden`/`disabled` properties and the optgroup's `hidden`; keyboard navigation does skip hidden/disabled options and hidden optgroups |
+| `select_option` on a hidden/disabled option or a missing value | Playwright waits for it and **times out** (default 30 s) instead of failing fast — the gate never does it; your filter must not hide the selected option's value from the select itself |
+| `page.goto` to the same page with a different hash | a same-document navigation: no reload, `hashchange` only, `goto` returns `None`. The gate opens a **fresh page** for the hash round-trip. `page.reload()` keeps the hash; `history.replaceState` changes `location.hash` without `hashchange`; assigning `location.hash` fires `hashchange` — the page uses `replaceState` and parses the hash on load only |
+| `localStorage` and the host name | `http://localhost:8765` and `http://127.0.0.1:8765` are different origins with separate storage; the gate keeps one host for the whole run |
+| Storing the preset library in `presets.js` | the gate counts options against `data/presets.json` and spot-checks five entries live; a hard-coded list that drifts from the JSON fails the set-equality check. Load the JSON |
 
 ## 8. Out of scope for this slice
 
@@ -265,10 +368,11 @@ beyond the first 200, browser support other than current Chromium.
 - Typography: a system sans-serif stack for UI text; a monospace stack for RA, Dec, FoV and
   the table's coordinate and separation columns so digits align. Tabular numerals
   (`font-variant-numeric: tabular-nums`) where supported.
-- Layout ≥ 1100 px: controls in a single row across the top (preset, RA, Dec, FoV, survey,
-  Explore); below it the image panel on the left (800 px square, scaling down to fit) and
-  the objects table on the right filling the remaining width. Below ~900 px everything
-  stacks vertically, image first.
+- Layout ≥ 1100 px: controls in a single row across the top (preset with its filter box stacked
+  directly above it, RA, Dec, FoV, survey, Explore); below it the image panel on the left (800 px
+  square, scaling down to fit) and the objects table on the right filling the remaining width.
+  Below ~900 px everything stacks vertically, image first. The preset select shows its six
+  `<optgroup>` labels natively; `Custom` is the first option and reads like one.
 - Table: sticky header, very-low-contrast zebra rows, right-aligned numeric columns,
   `main_id` links to `https://simbad.cds.unistra.fr/simbad/sim-id?Ident=<url-encoded main_id>`
   opening in a new tab (`rel="noopener"`).

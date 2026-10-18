@@ -3,7 +3,9 @@
 Browser-only sky explorer (HTML5 / CSS / vanilla JS ES modules; no framework, no build, no CDN,
 no backend). Full task spec: `spec.md`. Build procedure and failure table:
 `.claude/skills/build-sky-explorer/SKILL.md`. Human run instructions: `README.md` and `serve.py`
-at the repo root (the gate uses neither).
+at the repo root (the gate uses neither). The preset library `app/data/presets.json` is **generated**
+by `tools/build_presets.py` from `tools/preset_catalogue.csv` (names only, resolved in SIMBAD); never
+edit the JSON by hand — fix the CSV and re-run the tool.
 
 ## Definition of done
 
@@ -29,9 +31,9 @@ the service said.
 
 | # | Check | How it is measured |
 |---|---|---|
-| 1 | Six files exist and are non-empty: `app/index.html`, `app/css/styles.css`, `app/js/main.js`, `app/js/presets.js`, `app/js/services/hips2fits.js`, `app/js/services/simbad.js` (`app/js/services/http.js` and `serve.py` are part of the layout but not checked) | filesystem |
+| 1 | Seven files exist and are non-empty: `app/index.html`, `app/css/styles.css`, `app/js/main.js`, `app/js/presets.js`, `app/js/services/hips2fits.js`, `app/js/services/simbad.js`, `app/data/presets.json` (`app/js/services/http.js` and `serve.py` are part of the layout but not checked) | filesystem |
 | 2 | Page loads over `http://localhost:8765/index.html` with no uncaught exception | headless Chromium |
-| 3 | `select#preset` has an `Andromeda (M31)` option; `button#explore` exists | DOM |
+| 3 | `select#preset`: first option `value="custom"` (text `Custom`); then ≥ 250 named options, each inside an `<optgroup>` whose label is one of the six categories and is the option's own category; option values and the JSON `id`s are the same set; `m31` is `Andromeda (M31)` and is selected on a plain first load with `#ra`/`#dec`/`#fov` filled and **no request** sent; `button#explore` exists | DOM + network |
 | 4 | After Explore: ≥ 1 request to `alasky(bis).cds.unistra.fr/hips-image-services/hips2fits` with `ra`/`dec` within 0.01° of (10.68470833, +41.26875), `format=jpg|png`, full `hips` ID, `fov` in 0.1–10°, `width`/`height` ≥ 200, response `200 image/*` | intercepted network |
 | 5 | `img#sky-image` shows that cutout: `naturalWidth ≥ 200`, visible, ≥ 200 CSS px wide | DOM |
 | 6 | ≥ 1 request to `simbad.cds.unistra.fr`; **every** ADQL query carries `TOP n`, 1 ≤ n ≤ 500; one has `CIRCLE(` centred on M31 within 0.01° with radius 0.01–5°; one contains `GROUP BY` (the census); all responses 2xx | intercepted network |
@@ -46,6 +48,17 @@ the service said.
 | 15 | RA `400` + Explore → **no** request to either host, and a visible message in a `role="alert"` element | network + DOM |
 | 16 | SIMBAD forced to answer 503 → an alert names `503` and `SIMBAD`/`catalogue`; the page never shows `No catalogued objects` | route injection |
 | 17 | hips2fits forced to answer 500 → an alert names the image service and an error | route injection |
+| 18 | **Preset data.** `app/data/presets.json` parses; `presets` has ≥ 250 entries; every entry has `id` (unique slug), `label`, `category` (one of `Galaxies`, `Nebulae`, `Star clusters`, `Stars`, `Deep fields`, `Exotic & high-energy`), `main_id`, `ra` in [0, 360), `dec` in [−90, 90], `fov` in [0.05, 10], `otype`, `otype_desc` (null allowed), `resolved_by`, `resolved_at` (`YYYY-MM-DD`); no two entries within 0.001°. Then 5 entries chosen by `random.Random(20261017).sample(sorted(ids), 5)` are re-resolved **live** by `main_id` through the TAP `ident` query and must agree within 0.01°: SIMBAD down → exit 3 via the upstream-diagnosis path; an unknown `main_id` or a drift → exit 1 naming the preset. Skipped (with an INFO line) when `source` contains `SELFTEST FIXTURE` | filesystem + live TAP |
+| 19 | **Custom round-trip** on a fresh page without hash, with **no request to either host** at any point: `fill('#ra', '83.82')` → `#preset` value is `custom`; `select_option('#preset', 'm31')` → `#ra` is M31's RA; `select_option('#preset', 'custom')` → `#ra` is `83.82`; `page.reload()` → `#preset` is `custom` and `#ra` is `83.82` | DOM + localStorage + network |
+| 20 | **Filter.** `input#preset-filter` (`type="search"`) exists; `fill('#preset-filter', 'crab')` → the named options that are neither `hidden` nor `disabled` and whose `<optgroup>` is not hidden number between 1 and 5 and include `m1`; the `custom` option stays selectable and the select's value is unchanged; `fill('')` → every option selectable again, i.e. library size + 1. Measured by element **properties**, never geometry (options of a closed select have no client rects) | DOM |
+| 21 | **Hash written.** After the M31 Explore settles, `location.hash` parses (`URLSearchParams`) to `ra`/`dec` within 0.001° of (10.68470833, +41.26875), `fov` = the requested FoV, `hips` = the full HiPS id of the request, `preset=m31` | DOM |
+| 22 | **Hash read.** A fresh page opened at `index.html#ra=83.8201&dec=-5.3876&fov=1.0&hips=CDS%2FP%2FDSS2%2Fcolor` fills the three inputs, selects `custom` (matching coordinates never auto-select a preset; only `preset=<id>` does), and **both** hosts receive a request without any click, the ADQL cone centred on (83.8201, −5.3876). Then `#ra=400&dec=0&fov=1&hips=CDS%2FP%2FDSS2%2Fcolor` on another fresh page → no request to either host and a non-empty `#form-error` | DOM + network |
+| 23 | After the M31 Explore, `#image-caption` names the active preset: its label (`Andromeda (M31)`) or its `main_id` (`M  31`) | DOM |
+
+Library facts (2026-10-17): `tools/build_presets.py` resolved all 345 catalogue names (339 in four batch
+queries, 5 one by one, 1 via Sesame, 0 failed) — Galaxies 81 · Nebulae 50 · Star clusters 107 · Stars 47 ·
+Deep fields 18 · Exotic & high-energy 42; the closest pair is 0.003° apart (M 1 and the Crab pulsar); `crab`
+matches exactly two named options. The gate's floor is 250 presets.
 
 Thresholds come from live data (2026-10-17, re-measured the same day for revision 1): SIMBAD holds
 37,554 objects within 0.75° of M31 in 96 type groups (census `SUM(n)` = `COUNT(*)`); ordered by
@@ -72,8 +85,11 @@ at them when a check fails.
 ## Guardrails
 
 - **Write only under `app/`.** Never edit `verify/`, `.claude/`, `CLAUDE.md`, `spec.md`,
-  `BOOTSTRAP.md` (settings deny it anyway). If you believe the gate is wrong, stop and say
+  `BOOTSTRAP.md`, `tools/` (settings deny it anyway). If you believe the gate is wrong, stop and say
   exactly which check and why — do not work around it.
+- **`app/data/presets.json` is generated data, not code.** Do not edit it by hand and do not replace it
+  with a hard-coded list. If an entry looks wrong, stop and report the `id`: the fix is a row in
+  `tools/preset_catalogue.csv` plus a re-run of `tools/build_presets.py`, both outside your write scope.
 - No secrets, no env vars, no API keys, no new dependencies, no build step, no `file://` testing.
 - Never present fixture / hard-coded / cached data as live data. Upstream errors must surface as
   errors with service name and status, never as the empty state.

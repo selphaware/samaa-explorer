@@ -1,6 +1,6 @@
 ---
 name: build-sky-explorer
-description: Step-by-step procedure for building or fixing the Samaa Explorer page under app/ (hips2fits cutout + SIMBAD TAP table ordered by reference count + field census + client-side sort switch, vanilla JS) so that verify/smoke_test.py passes, with a table of common gate failures and their real causes. Use whenever creating or editing anything in app/.
+description: Step-by-step procedure for building or fixing the Samaa Explorer page under app/ (hips2fits cutout + SIMBAD TAP table ordered by reference count + field census + client-side sort switch + the generated preset library with Custom positions, a filter box and shareable URL hashes, vanilla JS) so that verify/smoke_test.py passes, with a table of common gate failures and their real causes. Use whenever creating or editing anything in app/.
 ---
 
 # Build the sky explorer so the gate passes
@@ -15,13 +15,32 @@ E:\CODE\samaa-explorer\.venv\Scripts\python.exe verify\smoke_test.py app\index.h
 ## Order of work
 
 1. **Skeleton first.** Create the files in `spec.md` §1 with the contract ids (`spec.md` §2) —
-   including `select#sort` (options `refs` = `Most studied`, selected; `sep` = `Nearest to centre`)
-   in the table panel head and an empty `#field-census` container above the table — the footer
+   `input#preset-filter` (`type="search"`, placeholder `Filter presets…`) directly above
+   `select#preset`, `select#sort` (options `refs` = `Most studied`, selected; `sep` = `Nearest to
+   centre`) in the table panel head, an empty `#field-census` container above the table — the footer
    acknowledgements, `<link rel="icon" href="data:,">`, and `<script type="module" src="js/main.js">`.
-   Run the gate: it should get past the structural check and fail on behaviour. That proves the
-   server, module loading and ids work.
-2. **`js/presets.js`** — export the eight presets from `spec.md` §3 (resolved coordinates, not the
-   brief's). Populate `select#preset` from it; on load and on `change` fill `#ra`, `#dec`, `#fov`.
+   `app/data/presets.json` already exists: it is generated, **do not touch it**. Run the gate: it
+   should get past the structural check and fail on behaviour. That proves the server, module loading
+   and ids work.
+2. **`js/presets.js`** — a loader, not a list: `export async function loadPresets()` does
+   `fetch('data/presets.json')`, checks `res.ok`, parses, checks that `presets` is a non-empty array
+   whose entries carry `id`, `label`, `category`, `main_id`, `ra`, `dec`, `fov`, and returns
+   `{ presets, byId }`. No DOM. In `main.js`, once it resolves: `select#preset` gets
+   `<option value="custom">Custom</option>` first, then one `<optgroup label="<category>">` per
+   category **in file order** holding `<option value="<id>">label</option>` for every entry (345 →
+   346 options). Then decide the initial state in this order: URL hash (step 6c) → stored Custom
+   (`localStorage['samaa.lastPreset'] === 'custom'` and a parsable `samaa.custom`) → `m31`; fill
+   `#ra`, `#dec`, `#fov` accordingly. A failed fetch writes `Preset library could not be loaded:
+   HTTP <status>` into `#form-error` — never an empty select, never a built-in fallback list.
+   - **Custom semantics**: an `input` event on `#ra`/`#dec`/`#fov` sets the select to `custom`,
+     stores `{ra, dec, fov}` (raw strings) in memory and in `localStorage['samaa.custom']`, and sets
+     `samaa.lastPreset = 'custom'`. `change` to a named preset fills the inputs and stores
+     `samaa.lastPreset = <id>`; `change` to `custom` restores the stored set (or leaves the inputs).
+     Make the fill idempotent: Playwright's `select_option` fires `change` even for the current value.
+   - **Filter**: on `input` in `#preset-filter`, trim and lower-case the query; for every named option
+     set both `hidden` and `disabled` to "does not match label or `main_id` (substring,
+     case-insensitive)"; set each `<optgroup>`'s `hidden` to "no visible option"; never touch the
+     `custom` option or the select's value; an empty query clears everything.
 3. **`js/services/http.js`** — `fetchFromService(url, {service, readBody, readErrorDetail, timeoutMs})`:
    one `AbortController` per request (30 s → `<service> timed out`), `!res.ok` → a `ServiceError`
    whose message is `<service> returned HTTP <status>`. No DOM access.
@@ -43,6 +62,19 @@ E:\CODE\samaa-explorer\.venv\Scripts\python.exe verify\smoke_test.py app\index.h
    into `#image-error` / `#table-error`. `#sort` `change` → re-sort the loaded rows **in memory**
    (numeric compare, `sepDeg` ascending or `nbref` descending with `sepDeg` tie-break), re-render,
    update `aria-sort`; **no request**.
+   - 6a. **Caption target**: the caption names the active target — `<label> · <main_id>` for a named
+     preset (`Andromeda (M31) · M  31`), `Custom position` for Custom — alongside survey, HiPS id,
+     centre, FoV and the credit.
+   - 6b. **Write the hash** as soon as validation passes and the requests go out:
+     `history.replaceState(null, '', '#' + new URLSearchParams({ra, dec, fov, hips, ...(preset)}))`
+     — `URLSearchParams` encodes `/` as `%2F`; add `preset=<id>` only when a named preset is selected.
+     Never assign `location.hash` (that fires `hashchange`) and do not listen to `hashchange`.
+   - 6c. **Read the hash on load** (after the library resolved): `new URLSearchParams(location.hash.slice(1))`;
+     `ra`, `dec`, `fov`, `hips` all required; `hips` must be a `select#survey` option value; fill the
+     inputs, set the survey, select `preset` if it is a known id else `custom` (storing the values as
+     the Custom set), then call the same Explore function the button calls. Validation failures end up
+     in `#form-error` with nothing fetched — RA `400` in a hash must behave exactly like RA `400` typed.
+     Matching coordinates never select a preset; only `preset=` does.
 7. **`css/styles.css`** — light, calm, scientific (`spec.md` §9): system font stack, monospace with
    tabular numerals for coordinates and counts, a two-column layout that collapses under ~900 px,
    census as one wrapped line of small text. Keep the image ≥ 200 CSS px wide at all viewports (the
@@ -54,8 +86,25 @@ E:\CODE\samaa-explorer\.venv\Scripts\python.exe verify\smoke_test.py app\index.h
 
 | Gate says | Real cause | Fix |
 |---|---|---|
-| `missing deliverable file` | wrong folder name or file not created yet | match `spec.md` §1 exactly |
-| `no <select> option matching /andromeda\|m\s*31/i` | presets rendered after the gate looked (it waits 6 s), or option text lacks "M31"/"Andromeda" | populate synchronously at module load; label `Andromeda (M31)` |
+| `missing deliverable file` | wrong folder name or file not created yet (`data/presets.json` counts) | match `spec.md` §1 exactly; never delete or rewrite `app/data/presets.json` |
+| `app/data/presets.json has N presets (need >= 250)` / `invalid preset entries` / `presets on the same spot` | the generated file was edited, truncated or replaced by hand | restore it from git; it is the tool's output, not yours — report a wrong entry instead of fixing it |
+| `live spot check ... failed` | `presets.json` disagrees with SIMBAD today | not your code: report it; the fix is re-running `tools/build_presets.py` outside `app/` |
+| `no <select> option matching /andromeda\|m\s*31/i` | presets rendered after the gate looked (it waits 6 s for the fetch), or option text lacks "M31"/"Andromeda" | populate as soon as `loadPresets()` resolves; `m31`'s label is `Andromeda (M31)` |
+| `select#preset first option must be value="custom"` | Custom missing or placed inside an optgroup / after the groups | `<option value="custom">Custom</option>` first, outside any `<optgroup>` |
+| `select#preset offers N named option(s) (need >= 250)` / `option values and the ids in data/presets.json are the same set` | only part of the file rendered, a hard-coded list, or ids altered | one option per entry, `value = id`, text = `label`, under `<optgroup label = category>` |
+| `option(s) under the wrong optgroup` / `options outside a category optgroup` | grouping by something other than `category`, or flat options | group by the entry's `category`, in file order |
+| `a plain load ... must select 'm31'` / `plain load sent N request(s)` | default selection missing, or Explore fired on load without a hash | select `m31` and fill; fetch only on Explore or a hash |
+| `after typing RA 83.82 select#preset is 'm31', not 'custom'` | no `input` listener, or it only runs on `change`/blur | listen to `input` on all three inputs; set the select to `custom` and store the set |
+| `could not select 'custom'` | no `<option value="custom">` | see above |
+| `after selecting 'custom' #ra is ...` | Custom restores nothing, or stores numbers that were re-formatted | keep the raw strings typed; restore them verbatim |
+| `after page.reload() select#preset is 'm31'` | Custom not persisted, or load order wrong (default applied after the stored set) | persist `samaa.custom` + `samaa.lastPreset`; on load: hash → stored Custom → `m31` |
+| `no input#preset-filter` / `must be type="search"` | control missing or a text input | `<input id="preset-filter" type="search">` above the select |
+| `filter 'crab' leaves N selectable named option(s)` | options only hidden (not disabled) or vice versa, matching on label only (fine) but with a stale list, or the whole optgroup hidden while options stay enabled | set both `hidden` and `disabled`; selectable means neither, with the optgroup visible |
+| `clearing the filter makes ... selectable ... expected N` | optgroups left hidden, or options left disabled | empty query resets every option and optgroup |
+| `after Explore location.hash is ''` | hash never written, or written with `location.hash =`/after the responses only | `history.replaceState` when the requests go out; `ra`, `dec`, `fov`, `hips` (encoded), `preset` |
+| `opening #ra=...&hips=... must fill #ra/#dec/#fov` / `must select 'custom'` / `must run Explore automatically` | hash parsed before the library loaded, `preset` guessed from coordinates, or no auto-Explore | parse after `loadPresets()`; `custom` unless `preset=` names a known id; call Explore |
+| `invalid hash ... must leave a message in #form-error` | hash values bypass validation or the error goes elsewhere | run the same validation as the button; message into `#form-error` |
+| `#image-caption must name the active preset` | caption lacks the label/main_id | append `<label> · <main_id>` (or `Custom position`) |
 | `uncaught exception while loading` + module 404 in console | bad relative import path (`/js/...` absolute, or missing `.js` extension) | imports are relative, end in `.js` |
 | `RA AND DEC ARE SWAPPED` | argument order mixed up in `cutoutUrl` or `CIRCLE(...)` | pass named fields; `CIRCLE('ICRS', ra, dec, r)` |
 | `format=None - must be jpg or png` | omitted `format`; service returned FITS, Chromium blocked it (`ERR_BLOCKED_BY_ORB`) | always `format=jpg` |
@@ -104,5 +153,16 @@ E:\CODE\samaa-explorer\.venv\Scripts\python.exe verify\smoke_test.py app\index.h
 - SIMBAD has slow spells (5–11 s for trivial queries, measured 2026-10-17); keep the 30 s timeout
   and a visible loading state rather than shortening it.
 - hips2fits accepts `ra=400`; only your validation stands between the user and nonsense.
-- Selecting the already-selected preset fires no `change`; fill inputs on load too. The same applies
-  to `#sort`: the gate selects `sep` from a `refs` default, so `refs` must be the selected option.
+- A real user re-picking the selected preset fires no `change`, but Playwright's `select_option`
+  **does** fire `change` (and `input`) even for the current value — fill inputs on load and keep the
+  handler idempotent. For `#sort` the gate selects `sep` from a `refs` default, so `refs` must be the
+  selected option.
+- Every `<option>` of a closed `<select>` reports zero client rects and `is_visible() === false`,
+  selectable or not; the gate judges the filter by the `hidden`/`disabled` properties and the
+  optgroup's `hidden`. Do not try to "show" options with CSS.
+- `data/presets.json` has 345 entries and `main_id`s with runs of spaces (`M  31`); match the filter
+  against them verbatim (lower-cased), and show them verbatim in the caption.
+- `page.goto` to the same page with a different hash is a same-document navigation; the gate opens a
+  fresh page for the hash round-trip, so the hash must be handled at load time, not on `hashchange`.
+- The filter leaves two named options for `crab` (`Crab Nebula (M1)`, `Crab Pulsar (PSR B0531+21)`);
+  that is the data, not a bug.
