@@ -18,7 +18,11 @@
     <form id="controls" class="controls" novalidate>
       <div class="field field-preset">
         <label for="preset">Preset</label>
-        <select id="preset" name="preset"></select>
+        <input id="preset-filter" type="search" placeholder="Filter presets…" aria-label="Filter presets by name or SIMBAD identifier"
+               aria-controls="preset" autocomplete="off" spellcheck="false">
+        <select id="preset" name="preset" autocomplete="off">
+          <option value="custom">Custom</option>
+        </select>
       </div>
       <div class="field field-coord">
         <label for="ra">RA (°)</label>

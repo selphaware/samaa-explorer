@@ -1,6 +1,7 @@
-// UI wiring: form → validation → image + catalogue panels, with loading, error and empty states.
-// All network access goes through the service adapters; this module never builds a URL itself.
-import { PRESETS, DEFAULT_PRESET_ID } from './presets.js';
+// UI wiring: preset library → form → validation → image + catalogue panels, with loading, error and
+// empty states. A Custom position is remembered in localStorage; every view is mirrored in the URL hash.
+// All network access goes through the service adapters; this module never builds a service URL itself.
+import { loadPresets, DEFAULT_PRESET_ID } from './presets.js';
 import { SURVEYS, DEFAULT_SURVEY, CREDIT as HIPS2FITS_CREDIT, fetchCutout } from './services/hips2fits.js';
 import { coneSearch, fieldCensus } from './services/simbad.js';
 
@@ -8,10 +9,15 @@ const IMAGE_SIZE_PX = 800;
 const TABLE_LIMIT = 200;
 const CENSUS_INLINE = 8; // census groups shown before the "+ k more types" tail
 const SIMBAD_OBJECT_PAGE = 'https://simbad.cds.unistra.fr/simbad/sim-id?Ident=';
+const CUSTOM = 'custom'; // value of select#preset's first option
+const STORAGE_CUSTOM = 'samaa.custom'; // {ra, dec, fov}: the raw strings as typed
+const STORAGE_LAST = 'samaa.lastPreset'; // 'custom' or a preset id; only 'custom' is restored on load
+const LINK_KEYS = ['ra', 'dec', 'fov', 'hips'];
 
 const $ = (selector) => document.querySelector(selector);
 const ui = {
   form: $('#controls'),
+  presetFilter: $('#preset-filter'),
   preset: $('#preset'),
   ra: $('#ra'),
   dec: $('#dec'),
@@ -35,11 +41,11 @@ const ui = {
   tbody: $('#objects-table tbody'),
 };
 
-// Client-side limits, checked before any URL is built.
+// Client-side limits, checked before any URL is built (typed values and link values alike).
 const FIELDS = [
-  { key: 'ra', valid: (v) => v >= 0 && v < 360, rule: 'RA must be a number of degrees with 0 ≤ RA < 360' },
-  { key: 'dec', valid: (v) => v >= -90 && v <= 90, rule: 'Dec must be a number of degrees between −90 and +90' },
-  { key: 'fov', valid: (v) => v >= 0.01 && v <= 10, rule: 'Field of view must be between 0.01 and 10 degrees' },
+  { key: 'ra', name: 'RA', valid: (v) => v >= 0 && v < 360, rule: 'RA must be a number of degrees with 0 ≤ RA < 360' },
+  { key: 'dec', name: 'Dec', valid: (v) => v >= -90 && v <= 90, rule: 'Dec must be a number of degrees between −90 and +90' },
+  { key: 'fov', name: 'FoV', valid: (v) => v >= 0.01 && v <= 10, rule: 'Field of view must be between 0.01 and 10 degrees' },
 ];
 const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 
@@ -54,36 +60,198 @@ const DEFAULT_SORT = 'refs';
 let busy = false;
 let imageObjectUrl = null;
 let loadedObjects = []; // rows of the last successful catalogue query, in server order
+let library = { presets: [], byId: new Map(), categories: [] };
+let libraryProblem = ''; // stays in #form-error next to any validation message
+let presetSearchText = new Map(); // preset id → "label\nmain_id", lower-cased, for the filter
+let customSet = readStoredCustom();
 
-// ---- setup (synchronous, so the presets exist as soon as the module has run) ----
+// ---- setup ----
 
-for (const preset of PRESETS) ui.preset.append(new Option(preset.label, preset.id));
 for (const survey of SURVEYS) ui.survey.append(new Option(survey.label, survey.id));
-ui.preset.value = DEFAULT_PRESET_ID;
 ui.survey.value = DEFAULT_SURVEY;
 ui.sort.value = DEFAULT_SORT;
 markSortedColumn(currentSort());
-applyPreset();
+ui.presetFilter.disabled = true; // until the library has loaded
 
-// Re-selecting the current preset fires no `change`, hence the fill on load above as well.
-ui.preset.addEventListener('change', applyPreset);
-// Enter in any input submits the form; the disabled submit button blocks it while busy.
+ui.preset.addEventListener('change', applySelection);
+ui.presetFilter.addEventListener('input', applyFilter);
+// Enter in the filter box must not submit the form (Explore is for the coordinate inputs).
+ui.presetFilter.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') event.preventDefault();
+});
+// Enter in any coordinate input submits the form; the disabled submit button blocks it while busy.
 ui.form.addEventListener('submit', (event) => {
   event.preventDefault();
   explore();
 });
-for (const key of ['ra', 'dec', 'fov']) {
-  ui[key].addEventListener('input', () => ui[key].removeAttribute('aria-invalid'));
+for (const { key } of FIELDS) {
+  ui[key].addEventListener('input', () => {
+    ui[key].removeAttribute('aria-invalid');
+    rememberCustom();
+  });
 }
 ui.sort.addEventListener('change', renderObjects);
 
-function applyPreset() {
-  const preset = PRESETS.find((p) => p.id === ui.preset.value);
-  if (!preset) return;
-  ui.ra.value = String(preset.ra);
-  ui.dec.value = String(preset.dec);
-  ui.fov.value = String(preset.fov);
+start();
+
+// Load the library, then decide the initial state: URL hash → stored Custom set → the default preset.
+async function start() {
+  try {
+    library = await loadPresets();
+    renderPresetOptions(library);
+    ui.presetFilter.disabled = false;
+  } catch (err) {
+    // Never a built-in fallback list: the select keeps only Custom and the problem is shown.
+    libraryProblem = err.message;
+    setFormError('');
+  }
+
+  const link = readLink();
+  if (link?.view) {
+    applyLink(link.view);
+    explore();
+    return;
+  }
+  applyDefaultSelection();
+  if (link?.problems) setFormError(link.problems.join(' '));
+}
+
+// ---- presets, Custom and the filter ----
+
+function renderPresetOptions({ presets, categories }) {
+  const groups = new Map(categories.map((category) => {
+    const group = document.createElement('optgroup');
+    group.label = category;
+    return [category, group];
+  }));
+  for (const preset of presets) groups.get(preset.category).append(new Option(preset.label, preset.id));
+  presetSearchText = new Map(presets.map((p) => [p.id, `${p.label}\n${p.main_id}`.toLowerCase()]));
+  ui.preset.append(...groups.values());
+}
+
+function applyDefaultSelection() {
+  if (readStored(STORAGE_LAST) === CUSTOM && customSet) {
+    ui.preset.value = CUSTOM;
+  } else if (library.byId.has(DEFAULT_PRESET_ID)) {
+    ui.preset.value = DEFAULT_PRESET_ID;
+  } else {
+    return;
+  }
+  applySelection();
+}
+
+// #preset change handler, also used on load. Idempotent: Playwright's select_option fires `change`
+// even for the option already selected. Fills the inputs only; the survey is left alone.
+function applySelection() {
+  const value = ui.preset.value;
+  if (value === CUSTOM) {
+    if (customSet) fillInputs(customSet);
+  } else {
+    const preset = library.byId.get(value);
+    if (!preset) return;
+    fillInputs({ ra: String(preset.ra), dec: String(preset.dec), fov: String(preset.fov) });
+  }
+  store(STORAGE_LAST, value);
+}
+
+// Typing in a coordinate input makes the current values the Custom set.
+function rememberCustom() {
+  ui.preset.value = CUSTOM;
+  customSet = { ra: ui.ra.value, dec: ui.dec.value, fov: ui.fov.value };
+  store(STORAGE_CUSTOM, JSON.stringify(customSet));
+  store(STORAGE_LAST, CUSTOM);
+}
+
+function fillInputs({ ra, dec, fov }) {
+  ui.ra.value = ra;
+  ui.dec.value = dec;
+  ui.fov.value = fov;
   for (const { key } of FIELDS) ui[key].removeAttribute('aria-invalid');
+}
+
+// Non-matching named options get both `hidden` and `disabled`; an optgroup left without a match is
+// hidden. The Custom option and the current selection are never touched.
+function applyFilter() {
+  const query = ui.presetFilter.value.trim().toLowerCase();
+  for (const group of ui.preset.querySelectorAll('optgroup')) {
+    let matches = 0;
+    for (const option of group.querySelectorAll('option')) {
+      const match = !query || (presetSearchText.get(option.value) ?? '').includes(query);
+      option.hidden = !match;
+      option.disabled = !match;
+      if (match) matches += 1;
+    }
+    group.hidden = matches === 0;
+  }
+}
+
+function readStoredCustom() {
+  try {
+    const set = JSON.parse(readStored(STORAGE_CUSTOM));
+    if (set && FIELDS.every(({ key }) => typeof set[key] === 'string')) return { ra: set.ra, dec: set.dec, fov: set.fov };
+  } catch {
+    // not JSON: treat as nothing stored
+  }
+  return null;
+}
+
+// Storage can be unavailable (privacy settings); Custom is then simply not remembered across reloads.
+function readStored(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function store(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // see readStored
+  }
+}
+
+// ---- shareable URL: #ra=<deg>&dec=<deg>&fov=<deg>&hips=<HiPS id>[&preset=<id>] ----
+
+// Parsed once on load; the page does not listen to `hashchange`.
+function readLink() {
+  const raw = location.hash.slice(1);
+  if (!raw) return null;
+  const params = new URLSearchParams(raw);
+  const values = Object.fromEntries(LINK_KEYS.map((key) => [key, (params.get(key) ?? '').trim()]));
+  const missing = LINK_KEYS.filter((key) => !values[key]);
+  if (missing.length) {
+    return { problems: [`Link is incomplete: it needs ra, dec, fov and hips (missing ${missing.join(', ')}).`] };
+  }
+  const problems = FIELDS
+    .filter((field) => Number.isNaN(parseField(field, values[field.key])))
+    .map((field) => `Link has an invalid ${field.name}: ${values[field.key]} (${field.rule}).`);
+  if (![...ui.survey.options].some((option) => option.value === values.hips)) {
+    problems.push(`Link names a survey this page does not offer: ${values.hips}.`);
+  }
+  if (problems.length) return { problems };
+  return { view: { ...values, preset: params.get('preset') } };
+}
+
+// Only `preset=<id>` selects a named preset; matching coordinates alone open as Custom, and a shared
+// Custom view becomes the user's current Custom set.
+function applyLink({ ra, dec, fov, hips, preset }) {
+  fillInputs({ ra, dec, fov });
+  ui.survey.value = hips;
+  if (preset && library.byId.has(preset)) {
+    ui.preset.value = preset;
+    store(STORAGE_LAST, preset);
+  } else {
+    rememberCustom();
+  }
+}
+
+// replaceState, never `location.hash =` (that would fire hashchange and add history entries).
+function writeLink({ ra, dec, fov, survey, target }) {
+  const params = new URLSearchParams({ ra: String(ra), dec: String(dec), fov: String(fov), hips: survey.id });
+  if (target) params.set('preset', target.id);
+  history.replaceState(null, '', `#${params}`);
 }
 
 // ---- explore ----
@@ -92,14 +260,16 @@ async function explore() {
   if (busy) return;
   const { values, problems } = readForm();
   if (problems.length) {
-    ui.formError.textContent = problems.map((p) => p.message).join(' ');
+    setFormError(problems.map((p) => p.message).join(' '));
     problems[0].input.focus();
     return;
   }
-  ui.formError.textContent = '';
+  setFormError('');
 
   const survey = SURVEYS.find((s) => s.id === ui.survey.value) ?? { id: ui.survey.value, label: ui.survey.value };
-  const view = { ...values, radius: values.fov / 2, survey, target: presetAt(values.ra, values.dec) };
+  const view = { ...values, radius: values.fov / 2, survey, target: activeTarget() };
+  // Written as the requests go out, so a failing service still leaves a URL to retry.
+  writeLink(view);
 
   setBusy(true);
   try {
@@ -115,17 +285,27 @@ function readForm() {
   for (const field of FIELDS) {
     const input = ui[field.key];
     const raw = input.value.trim();
-    const text = raw.replace(/^−/, '-'); // accept a typographic minus sign
-    const value = DECIMAL.test(text) ? Number(text) : NaN;
-    if (Number.isFinite(value) && field.valid(value)) {
-      input.removeAttribute('aria-invalid');
-      values[field.key] = value;
-    } else {
+    const value = parseField(field, raw);
+    if (Number.isNaN(value)) {
       input.setAttribute('aria-invalid', 'true');
       problems.push({ input, message: `${field.rule} (got “${raw || 'nothing'}”).` });
+    } else {
+      input.removeAttribute('aria-invalid');
+      values[field.key] = value;
     }
   }
   return { values, problems };
+}
+
+// The value in degrees, or NaN when the text is not a plain decimal inside the field's limits.
+function parseField(field, raw) {
+  const text = raw.trim().replace(/^−/, '-'); // accept a typographic minus sign
+  const value = DECIMAL.test(text) ? Number(text) : NaN;
+  return Number.isFinite(value) && field.valid(value) ? value : NaN;
+}
+
+function setFormError(message) {
+  ui.formError.textContent = [libraryProblem, message].filter(Boolean).join(' ');
 }
 
 function setBusy(on) {
@@ -134,8 +314,10 @@ function setBusy(on) {
   ui.explore.textContent = on ? 'Loading…' : 'Explore';
 }
 
-function presetAt(ra, dec) {
-  return PRESETS.find((p) => Math.abs(p.ra - ra) < 1e-9 && Math.abs(p.dec - dec) < 1e-9)?.label ?? null;
+// The named preset selected at Explore time, or null for a Custom position.
+function activeTarget() {
+  const preset = library.byId.get(ui.preset.value);
+  return preset ? { id: preset.id, label: preset.label, mainId: preset.main_id } : null;
 }
 
 // ---- image panel ----
@@ -174,6 +356,7 @@ function displayImage(src, alt) {
   });
 }
 
+// Revokes the previous blob URL before a new one is assigned, so repeated Explores do not leak images.
 function clearImage() {
   const img = ui.image;
   img.onload = null;
@@ -192,17 +375,24 @@ function setImageStatus(text) {
 }
 
 function altText({ ra, dec, fov, survey, target }) {
-  const where = target ? `${target}, centred on` : 'Sky centred on';
+  const where = target ? `${target.label}, centred on` : 'Custom position, centred on';
   return `${survey.label} survey image: ${where} RA ${deg(ra, 4)}°, Dec ${signedDeg(dec, 4)}°, ${fov}° field of view`;
 }
 
 function renderCaption({ ra, dec, fov, survey, target }) {
+  const targetLine = line('caption-target', target ? `${target.label} · ` : 'Custom position');
+  if (target) {
+    const mainId = document.createElement('code');
+    mainId.className = 'simbad-id';
+    mainId.textContent = target.mainId; // verbatim, runs of spaces included ("M  31")
+    targetLine.append(mainId);
+  }
   const surveyLine = line('caption-survey', `${survey.label} `);
   const hipsId = document.createElement('code');
   hipsId.textContent = survey.id;
   surveyLine.append(hipsId);
-  if (target) surveyLine.append(` · ${target}`);
   ui.caption.replaceChildren(
+    targetLine,
     surveyLine,
     line('caption-coords',
       `Centre RA ${deg(ra, 6)}°, Dec ${signedDeg(dec, 6)}° (ICRS) · FoV ${fov}° · ${IMAGE_SIZE_PX} × ${IMAGE_SIZE_PX} px, TAN`),

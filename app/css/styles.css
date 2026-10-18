@@ -130,8 +130,19 @@ select:hover {
   border-color: var(--muted);
 }
 
+.field-preset input,
 .field-preset select {
   width: 14rem;
+}
+
+/* The filter sits directly above the select it narrows, a step quieter than the select itself. */
+#preset-filter {
+  height: 30px;
+  font-size: 13px;
+}
+
+#preset-filter::placeholder {
+  color: var(--muted);
 }
 
 .field-survey select {
@@ -299,8 +310,19 @@ input[aria-invalid="true"] {
   color: var(--muted);
 }
 
+.caption-target {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .caption-survey {
   color: var(--text);
+}
+
+/* SIMBAD ids pad with runs of spaces ("M  31"); show them as SIMBAD writes them. */
+.caption .simbad-id {
+  font-weight: 400;
+  white-space: pre;
 }
 
 .caption code,
@@ -505,6 +527,7 @@ input[aria-invalid="true"] {
     flex: 1 1 100%;
   }
 
+  .field-preset input,
   .field-preset select,
   .field-survey select {
     width: 100%;

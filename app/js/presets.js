@@ -1,15 +1,65 @@
-// Preset targets (ICRS J2000, decimal degrees), resolved via CDS Sesame and cross-checked in
-// SIMBAD TAP on 2026-10-17. `simbadId` is the SIMBAD main_id, kept verbatim (internal spaces
-// included). `fov` is the default field of view in degrees.
-export const PRESETS = [
-  { id: 'm31', label: 'Andromeda (M31)', simbadId: 'M  31', ra: 10.68470833, dec: 41.26875, fov: 1.5 },
-  { id: 'm42', label: 'Orion Nebula (M42)', simbadId: 'M  42', ra: 83.8201, dec: -5.3876, fov: 1.0 },
-  { id: 'sgra', label: 'Sagittarius A*', simbadId: 'NAME Sgr A*', ra: 266.41681662, dec: -29.00782497, fov: 0.5 },
-  { id: 'm87', label: 'M87', simbadId: 'M  87', ra: 187.70593077, dec: 12.39112325, fov: 0.5 },
-  { id: 'hudf', label: 'Hubble Ultra Deep Field', simbadId: 'NAME Hubble Ultra Deep Field', ra: 53.1625, dec: -27.79138889, fov: 0.2 },
-  { id: 'm1', label: 'Crab Nebula (M1)', simbadId: 'M   1', ra: 83.6324, dec: 22.0174, fov: 0.3 },
-  { id: 'm45', label: 'Pleiades (M45)', simbadId: 'Cl Melotte   22', ra: 56.60083333, dec: 24.11388889, fov: 2.0 },
-  { id: 'betelgeuse', label: 'Betelgeuse', simbadId: '* alf Ori', ra: 88.79293899, dec: 7.407064, fov: 0.5 },
-];
+// Loader for the preset library. The library itself is generated data (data/presets.json, written
+// by tools/build_presets.py from tools/preset_catalogue.csv); this module only fetches it, checks its
+// shape and exposes it. No DOM access, and no built-in fallback list.
 
+export const LIBRARY_URL = 'data/presets.json';
 export const DEFAULT_PRESET_ID = 'm31';
+
+const STRING_FIELDS = ['id', 'label', 'category', 'main_id'];
+const NUMBER_FIELDS = ['ra', 'dec', 'fov'];
+
+export class PresetLibraryError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'PresetLibraryError';
+  }
+}
+
+/**
+ * Fetch the library (relative to the page) and resolve with
+ * `{ presets, byId, categories }`: the entries in file order (category order, then natural label
+ * order), a Map from `id` to entry, and the categories in the order they first appear.
+ * Entries keep the file's field names; `main_id` is SIMBAD's identifier verbatim ("M  31").
+ * Rejects with a PresetLibraryError whose message is fit for the UI.
+ */
+export async function loadPresets({ url = LIBRARY_URL } = {}) {
+  const fail = (why) => new PresetLibraryError(`Preset library could not be loaded: ${why}`);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch {
+    throw fail('network error');
+  }
+  if (!response.ok) throw fail(`HTTP ${response.status}`);
+  let doc;
+  try {
+    doc = await response.json();
+  } catch {
+    throw fail(`${url} is not valid JSON`);
+  }
+  if (!doc || !Array.isArray(doc.presets) || doc.presets.length === 0) {
+    throw fail(`${url} has no "presets" entries`);
+  }
+
+  const byId = new Map();
+  const categories = [];
+  doc.presets.forEach((entry, i) => {
+    const problem = entryProblem(entry);
+    if (problem) throw fail(`entry ${i + 1} ${problem}`);
+    if (byId.has(entry.id)) throw fail(`entry ${i + 1} repeats the id "${entry.id}"`);
+    byId.set(entry.id, Object.freeze(entry));
+    if (!categories.includes(entry.category)) categories.push(entry.category);
+  });
+  return { presets: [...byId.values()], byId, categories };
+}
+
+function entryProblem(entry) {
+  if (!entry || typeof entry !== 'object') return 'is not an object';
+  for (const key of STRING_FIELDS) {
+    if (typeof entry[key] !== 'string' || !entry[key].trim()) return `lacks a "${key}"`;
+  }
+  for (const key of NUMBER_FIELDS) {
+    if (typeof entry[key] !== 'number' || !Number.isFinite(entry[key])) return `("${entry.id}") lacks a numeric "${key}"`;
+  }
+  return '';
+}
